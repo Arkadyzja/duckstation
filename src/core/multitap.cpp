@@ -65,7 +65,8 @@ void Multitap::ResetTransferState()
 
 bool Multitap::TransferController(u32 slot, const u8 data_in, u8* data_out) const
 {
-  const u32 pad_port = Controller::ConvertPortAndSlotToPad(m_base_index, slot);
+  const u32 port = (m_base_index == 0) ? 0 : 1;
+  const u32 pad_port = Controller::ConvertPortAndSlotToPad(port, slot);
   Controller* const selected_controller = Pad::GetController(pad_port);
   if (!selected_controller)
   {

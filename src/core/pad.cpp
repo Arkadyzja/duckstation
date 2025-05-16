@@ -755,15 +755,22 @@ void Pad::BeginTransfer()
 
 void Pad::DoTransfer(TickCount ticks_late)
 {
-  DEBUG_LOG("Transferring slot {}", s_state.JOY_CTRL.SLOT.GetValue());
+  const u8 port = s_state.JOY_CTRL.SLOT.GetValue();
+  DEBUG_LOG("Transferring slot {}", port);
 
-  const u8 device_index = s_state.multitaps[0].IsEnabled() ? 4u : s_state.JOY_CTRL.SLOT;
-  Controller* const controller = s_state.controllers[device_index].get();
-  MemoryCard* const memory_card = s_state.memory_cards[device_index].get();
+  const bool multitap_enabled = s_state.multitaps[port].IsEnabled();
+  u8 device_index = 0xFF;
+  Controller* controller = nullptr;
+  MemoryCard* memory_card = nullptr;
 
-  // set rx?
+  if (!multitap_enabled)
+  {
+    device_index = (port == 0) ? 0 : 1;
+    controller = s_state.controllers[device_index].get();
+    memory_card = s_state.memory_cards[device_index].get();
+  }
+
   s_state.JOY_CTRL.RXEN = true;
-
   const u8 data_out = s_state.transmit_value;
 
   u8 data_in = 0xFF;
@@ -773,34 +780,28 @@ void Pad::DoTransfer(TickCount ticks_late)
   {
     case ActiveDevice::None:
     {
-      if (s_state.multitaps[s_state.JOY_CTRL.SLOT].IsEnabled())
+      if (multitap_enabled)
       {
-        if ((ack = s_state.multitaps[s_state.JOY_CTRL.SLOT].Transfer(data_out, &data_in)) == true)
+        if ((ack = s_state.multitaps[port].Transfer(data_out, &data_in)))
         {
-          TRACE_LOG("Active device set to tap {}, sent 0x{:02X}, received 0x{:02X}",
-                    static_cast<int>(s_state.JOY_CTRL.SLOT), data_out, data_in);
+          TRACE_LOG("Active device set to multitap {}, sent 0x{:02X}, received 0x{:02X}", port, data_out, data_in);
           s_state.active_device = ActiveDevice::Multitap;
         }
       }
       else
       {
-        if (!controller || (ack = controller->Transfer(data_out, &data_in)) == false)
+        if (!controller || !(ack = controller->Transfer(data_out, &data_in)))
         {
-          if (!memory_card || (ack = memory_card->Transfer(data_out, &data_in)) == false)
+          if (!memory_card || !(ack = memory_card->Transfer(data_out, &data_in)))
           {
-            // nothing connected to this port
             TRACE_LOG("Nothing connected or ACK'ed");
           }
           else
           {
-            // memory card responded, make it the active device until non-ack
             TRACE_LOG("Transfer to memory card, data_out=0x{:02X}, data_in=0x{:02X}", data_out, data_in);
             s_state.active_device = ActiveDevice::MemoryCard;
 
-            // back up memory card state in case we roll back to before this transfer begun
             const u32 frame_number = System::GetFrameNumber();
-
-            // consider u32 overflow case
             if (ShouldAvoidSavingToState() &&
                 (frame_number - s_state.last_memory_card_transfer_frame) > GetMaximumRollbackFrames())
               BackupMemoryCardState();
@@ -810,7 +811,6 @@ void Pad::DoTransfer(TickCount ticks_late)
         }
         else
         {
-          // controller responded, make it the active device until non-ack
           TRACE_LOG("Transfer to controller, data_out=0x{:02X}, data_in=0x{:02X}", data_out, data_in);
           s_state.active_device = ActiveDevice::Controller;
         }
@@ -841,11 +841,11 @@ void Pad::DoTransfer(TickCount ticks_late)
 
     case ActiveDevice::Multitap:
     {
-      if (s_state.multitaps[s_state.JOY_CTRL.SLOT].IsEnabled())
+      if (multitap_enabled)
       {
-        ack = s_state.multitaps[s_state.JOY_CTRL.SLOT].Transfer(data_out, &data_in);
-        TRACE_LOG("Transfer tap {}, sent 0x{:02X}, received 0x{:02X}, acked: {}",
-                  static_cast<int>(s_state.JOY_CTRL.SLOT), data_out, data_in, ack ? "true" : "false");
+        ack = s_state.multitaps[port].Transfer(data_out, &data_in);
+        TRACE_LOG("Transfer to multitap {}, sent 0x{:02X}, received 0x{:02X}, acked: {}", port, data_out, data_in,
+                  ack ? "true" : "false");
       }
     }
     break;
@@ -853,10 +853,10 @@ void Pad::DoTransfer(TickCount ticks_late)
 
   s_state.receive_buffer = data_in;
   s_state.receive_buffer_full = true;
+
   if (s_state.JOY_CTRL.RXINTEN)
     TriggerIRQ("TX");
 
-  // device no longer active?
   if (!ack)
   {
     s_state.active_device = ActiveDevice::None;
@@ -864,9 +864,9 @@ void Pad::DoTransfer(TickCount ticks_late)
   }
   else
   {
-    const bool memcard_transfer = s_state.active_device == ActiveDevice::MemoryCard ||
-                                  (s_state.active_device == ActiveDevice::Multitap &&
-                                   s_state.multitaps[s_state.JOY_CTRL.SLOT].IsReadingMemoryCard());
+    const bool memcard_transfer =
+      s_state.active_device == ActiveDevice::MemoryCard ||
+      (s_state.active_device == ActiveDevice::Multitap && s_state.multitaps[port].IsReadingMemoryCard());
 
     const TickCount ack_timer = GetACKTicks(memcard_transfer);
     DEBUG_LOG("Delaying ACK for {} ticks", ack_timer);
